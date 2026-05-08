@@ -1,0 +1,31 @@
+{
+  "name": "daymenify",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@9.1.0",
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "lint": "turbo lint",
+    "type-check": "turbo type-check",
+    "clean": "turbo clean && rm -rf node_modules",
+    "db:migrate": "pnpm --filter @daymenify/api prisma:migrate",
+    "db:seed": "pnpm --filter @daymenify/api prisma:seed",
+    "db:studio": "pnpm --filter @daymenify/api prisma:studio"
+  },
+  "devDependencies": {
+    "turbo": "^2.0.0",
+    "prettier": "^3.3.0",
+    "@commitlint/cli": "^19.3.0",
+    "@commitlint/config-conventional": "^19.2.2",
+    "husky": "^9.0.11",
+    "lint-staged": "^15.2.5"
+  },
+  "lint-staged": {
+    "*.{ts,tsx}": ["eslint --fix", "prettier --write"],
+    "*.{json,md,yml}": ["prettier --write"]
+  },
+  "commitlint": {
+    "extends": ["@commitlint/config-conventional"]
+  }
+}

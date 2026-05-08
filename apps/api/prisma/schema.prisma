@@ -1,0 +1,434 @@
+// Daymenify Database Schema
+// PostgreSQL with Prisma ORM
+// Phase 1: Core Foundation Models
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// IDENTITY & ACCESS CONTROL
+// ============================================
+
+model User {
+  id              String     @id @default(uuid())
+  email           String     @unique
+  phone           String?    @unique
+  password        String
+  name            String
+  username        String?    @unique
+  avatar          String?
+  emailVerified   Boolean    @default(false)
+  phoneVerified   Boolean    @default(false)
+  googleId        String?    @unique
+  referralCode    String     @unique
+  referredBy      String?
+  status          UserStatus @default(ACTIVE)
+  lastLoginAt     DateTime?
+  lastLoginIp     String?
+
+  roleId String
+  role   Role   @relation(fields: [roleId], references: [id])
+
+  transactions Transaction[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@index([email])
+  @@index([phone])
+  @@index([referralCode])
+  @@index([status])
+  @@index([roleId])
+  @@map("users")
+}
+
+model Role {
+  id          String  @id @default(uuid())
+  name        String  @unique
+  displayName String
+  description String?
+  isSystem    Boolean @default(false)
+
+  users       User[]
+  permissions RolePermission[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String  @id @default(uuid())
+  name        String  @unique
+  module      String
+  action      String
+  description String?
+
+  roles RolePermission[]
+
+  @@index([module])
+  @@map("permissions")
+}
+
+model RolePermission {
+  id           String @id @default(uuid())
+  roleId       String
+  permissionId String
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+// ============================================
+// CATALOG & PRODUCTS
+// ============================================
+
+model Category {
+  id          String  @id @default(uuid())
+  name        String
+  slug        String  @unique
+  description String?
+  icon        String?
+  image       String?
+  parentId    String?
+  sortOrder   Int     @default(0)
+  isActive    Boolean @default(true)
+
+  parent   Category?  @relation("CategoryHierarchy", fields: [parentId], references: [id])
+  children Category[] @relation("CategoryHierarchy")
+  products Product[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([slug])
+  @@index([parentId])
+  @@index([isActive, sortOrder])
+  @@map("categories")
+}
+
+model Product {
+  id          String        @id @default(uuid())
+  name        String
+  slug        String        @unique
+  description String?
+  shortDesc   String?
+  image       String?
+  categoryId  String
+  type        ProductType
+  status      ProductStatus @default(ACTIVE)
+
+  basePrice    Decimal  @db.Decimal(15, 2)
+  sellingPrice Decimal  @db.Decimal(15, 2)
+  strikePrice  Decimal? @db.Decimal(15, 2)
+
+  denomination String?
+  formFields   Json?
+
+  metaTitle       String?
+  metaDescription String?
+
+  isFeatured Boolean @default(false)
+  isPopular  Boolean @default(false)
+  sortOrder  Int     @default(0)
+  totalSold  Int     @default(0)
+
+  category         Category          @relation(fields: [categoryId], references: [id])
+  providerProducts ProviderProduct[]
+  transactions     Transaction[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([slug])
+  @@index([categoryId])
+  @@index([status])
+  @@index([type])
+  @@index([isPopular])
+  @@index([isFeatured])
+  @@map("products")
+}
+
+// ============================================
+// PROVIDERS
+// ============================================
+
+model Provider {
+  id            String       @id @default(uuid())
+  name          String
+  code          String       @unique
+  type          ProviderType
+  apiUrl        String
+  apiKey        String
+  apiSecret     String?
+  webhookSecret String?
+  isActive      Boolean      @default(true)
+  priority      Int          @default(0)
+  balance       Decimal?     @db.Decimal(15, 2)
+  settings      Json?
+
+  providerProducts ProviderProduct[]
+  transactions     Transaction[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([code])
+  @@index([isActive, priority])
+  @@map("providers")
+}
+
+model ProviderProduct {
+  id            String   @id @default(uuid())
+  productId     String
+  providerId    String
+  providerCode  String
+  providerPrice Decimal  @db.Decimal(15, 2)
+  isActive      Boolean  @default(true)
+  priority      Int      @default(0)
+  lastSyncAt    DateTime?
+
+  product  Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  provider Provider @relation(fields: [providerId], references: [id])
+
+  @@unique([productId, providerId, providerCode])
+  @@index([providerId])
+  @@index([providerCode])
+  @@map("provider_products")
+}
+
+// ============================================
+// TRANSACTIONS
+// ============================================
+
+model Transaction {
+  id         String @id @default(uuid())
+  invoiceId  String @unique
+  userId     String
+  productId  String
+  providerId String?
+
+  productName  String
+  denomination String?
+  customerData Json
+
+  basePrice      Decimal @db.Decimal(15, 2)
+  markupAmount   Decimal @db.Decimal(15, 2)
+  discountAmount Decimal @default(0) @db.Decimal(15, 2)
+  feeAmount      Decimal @default(0) @db.Decimal(15, 2)
+  totalAmount    Decimal @db.Decimal(15, 2)
+
+  status        TransactionStatus @default(PENDING)
+  paymentStatus PaymentStatus     @default(UNPAID)
+
+  providerRef    String?
+  providerStatus String?
+  serialNumber   String?
+
+  paymentMethod  String?
+  paymentGateway String?
+  paidAt         DateTime?
+
+  ipAddress String?
+  expiresAt DateTime?
+  completedAt DateTime?
+
+  user     User      @relation(fields: [userId], references: [id])
+  product  Product   @relation(fields: [productId], references: [id])
+  provider Provider? @relation(fields: [providerId], references: [id])
+  logs     TransactionLog[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([invoiceId])
+  @@index([userId])
+  @@index([status])
+  @@index([paymentStatus])
+  @@index([createdAt])
+  @@map("transactions")
+}
+
+model TransactionLog {
+  id            String @id @default(uuid())
+  transactionId String
+  action        String
+  status        String
+  message       String?
+  data          Json?
+  source        String?
+
+  transaction Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@index([transactionId])
+  @@map("transaction_logs")
+}
+
+// ============================================
+// PAYMENT CONFIGURATION
+// ============================================
+
+model PaymentGateway {
+  id            String  @id @default(uuid())
+  name          String
+  code          String  @unique
+  apiUrl        String
+  apiKey        String
+  apiSecret     String?
+  merchantId    String?
+  webhookSecret String?
+  isActive      Boolean @default(true)
+  isSandbox     Boolean @default(false)
+  priority      Int     @default(0)
+  settings      Json?
+
+  methods PaymentMethod[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([code])
+  @@index([isActive])
+  @@map("payment_gateways")
+}
+
+model PaymentMethod {
+  id        String  @id @default(uuid())
+  gatewayId String
+  name      String
+  code      String
+  type      PaymentMethodType
+  icon      String?
+  isActive  Boolean @default(true)
+  minAmount Decimal @default(0) @db.Decimal(15, 2)
+  maxAmount Decimal? @db.Decimal(15, 2)
+  feeType   FeeType @default(FIXED)
+  feeValue  Decimal @default(0) @db.Decimal(15, 2)
+  sortOrder Int     @default(0)
+
+  gateway PaymentGateway @relation(fields: [gatewayId], references: [id], onDelete: Cascade)
+
+  @@unique([gatewayId, code])
+  @@index([isActive, sortOrder])
+  @@map("payment_methods")
+}
+
+// ============================================
+// SYSTEM
+// ============================================
+
+model SystemSetting {
+  id          String  @id @default(uuid())
+  key         String  @unique
+  value       Json
+  group       String
+  description String?
+  isPublic    Boolean @default(false)
+
+  updatedAt DateTime @updatedAt
+
+  @@index([group])
+  @@map("system_settings")
+}
+
+model AuditLog {
+  id         String  @id @default(uuid())
+  userId     String?
+  action     String
+  module     String
+  entityType String?
+  entityId   String?
+  oldData    Json?
+  newData    Json?
+  ipAddress  String?
+  userAgent  String?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([module])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// ============================================
+// ENUMS
+// ============================================
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  BANNED
+  SUSPENDED
+}
+
+enum ProductType {
+  GAME_TOPUP
+  PULSA
+  DATA_PACKAGE
+  PLN_TOKEN
+  EWALLET
+  VOUCHER
+  STREAMING
+  OTHER
+}
+
+enum ProductStatus {
+  ACTIVE
+  INACTIVE
+  OUT_OF_STOCK
+  MAINTENANCE
+}
+
+enum ProviderType {
+  DIGIFLAZZ
+  VIP_RESELLER
+  TOKOVOUCHER
+  CUSTOM
+}
+
+enum TransactionStatus {
+  PENDING
+  PAID
+  PROCESSING
+  COMPLETED
+  FAILED
+  REFUNDED
+  EXPIRED
+  CANCELLED
+}
+
+enum PaymentStatus {
+  UNPAID
+  PAID
+  EXPIRED
+  REFUNDED
+  FAILED
+}
+
+enum PaymentMethodType {
+  VIRTUAL_ACCOUNT
+  EWALLET
+  QRIS
+  RETAIL
+  BANK_TRANSFER
+  CREDIT_CARD
+  MANUAL
+}
+
+enum FeeType {
+  PERCENTAGE
+  FIXED
+  BOTH
+}

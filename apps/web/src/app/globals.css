@@ -1,0 +1,103 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --color-primary: 59 130 246;
+    --color-accent: 168 85 247;
+    --color-background: 250 251 252;
+    --color-foreground: 15 23 42;
+    --color-muted: 241 245 249;
+    --color-muted-foreground: 100 116 139;
+    --color-card: 255 255 255;
+    --color-card-foreground: 15 23 42;
+    --color-border: 226 232 240;
+    --color-input: 226 232 240;
+    --color-ring: 59 130 246;
+    --color-destructive: 239 68 68;
+    --color-success: 34 197 94;
+    --color-warning: 245 158 11;
+    --radius: 0.5rem;
+    --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  }
+
+  .dark {
+    --color-primary: 96 165 250;
+    --color-accent: 192 132 252;
+    --color-background: 15 23 42;
+    --color-foreground: 248 250 252;
+    --color-muted: 30 41 59;
+    --color-muted-foreground: 148 163 184;
+    --color-card: 30 41 59;
+    --color-card-foreground: 248 250 252;
+    --color-border: 51 65 85;
+    --color-input: 51 65 85;
+    --color-ring: 96 165 250;
+    --color-destructive: 239 68 68;
+    --color-success: 34 197 94;
+    --color-warning: 245 158 11;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html {
+    @apply scroll-smooth;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-feature-settings: 'rlig' 1, 'calt' 1;
+  }
+
+  /* Focus styles */
+  *:focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+  }
+}
+
+@layer components {
+  .container-app {
+    @apply mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8;
+  }
+
+  .gradient-primary {
+    @apply bg-gradient-to-r from-primary-500 to-accent-500;
+  }
+
+  .gradient-text {
+    @apply bg-gradient-to-r from-primary-500 to-accent-500 bg-clip-text text-transparent;
+  }
+
+  .card-base {
+    @apply rounded-xl border border-border bg-card p-6 shadow-card transition-shadow hover:shadow-soft;
+  }
+
+  .btn-primary {
+    @apply inline-flex items-center justify-center rounded-lg bg-primary-500 px-4 py-2.5 text-sm font-medium text-white transition-all hover:bg-primary-600 focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 active:scale-[0.98] disabled:pointer-events-none disabled:opacity-50;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center justify-center rounded-lg border border-border bg-card px-4 py-2.5 text-sm font-medium text-foreground transition-all hover:bg-muted focus:ring-2 focus:ring-ring focus:ring-offset-2 active:scale-[0.98] disabled:pointer-events-none disabled:opacity-50;
+  }
+
+  .input-base {
+    @apply flex h-10 w-full rounded-lg border border-input bg-card px-3 py-2 text-sm transition-colors placeholder:text-muted-foreground focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  .animate-in {
+    animation: fade-in 0.5s ease-out forwards;
+  }
+
+  .skeleton {
+    @apply animate-pulse rounded-md bg-muted;
+  }
+}
