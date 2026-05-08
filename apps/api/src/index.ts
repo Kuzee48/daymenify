@@ -4,6 +4,7 @@ import { env } from '@/config';
 import { logger } from '@/lib/logger';
 import { disconnectPrisma } from '@/lib/prisma';
 import { connectRedis, disconnectRedis } from '@/lib/redis';
+import { stopWorkers } from '@/workers';
 
 const server = app.listen(env.PORT, async () => {
   logger.info(
@@ -30,6 +31,7 @@ const gracefulShutdown = async (signal: string) => {
     logger.info('HTTP server closed');
 
     try {
+      await stopWorkers(); // Close all BullMQ workers gracefully
       await disconnectPrisma();
       await disconnectRedis();
     } catch (err) {

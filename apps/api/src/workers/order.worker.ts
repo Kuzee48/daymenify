@@ -56,11 +56,15 @@ export async function processOrderJob(job: Job<OrderJobData>): Promise<void> {
     // Extract customer number from customerData JSON field
     const txCustomerData = transaction.customerData as Record<string, string> | null;
 
-    // 2. Update status to PROCESSING
-    await prisma.transaction.update({
-      where: { id: transactionId },
+    // 2. Update status to PROCESSING (optimistic lock to prevent double-spend)
+    const result = await prisma.transaction.updateMany({
+      where: { id: transactionId, status: 'PAID' },
       data: { status: 'PROCESSING' },
     });
+    if (result.count === 0) {
+      jobLogger.warn('Transaction already being processed by another worker, skipping');
+      return; // Another worker got it first
+    }
 
     // Log the processing start
     await logTransactionStep(transactionId, 'ORDER_SUBMITTED', `Submitting order to provider (attempt ${attemptNumber})`);

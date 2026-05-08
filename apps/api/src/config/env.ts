@@ -23,6 +23,10 @@ const envSchema = z.object({
   RATE_LIMIT_WINDOW_MS: z.coerce.number().default(900000),
   RATE_LIMIT_MAX_REQUESTS: z.coerce.number().default(100),
 
+  // Security
+  PAYMENT_ENCRYPTION_KEY: z.string().min(32).describe('AES-256 key for encrypting payment gateway configs'),
+  WEBHOOK_BASE_URL: z.string().url().default('http://localhost:4000').describe('Base URL for webhook callbacks'),
+
   // Logging
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
 });

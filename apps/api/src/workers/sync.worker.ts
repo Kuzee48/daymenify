@@ -4,6 +4,7 @@ import { redis } from '@/lib/redis';
 import { logger } from '@/lib/logger';
 import { ProviderFactory } from '@/services/provider';
 import { markupEngine } from '@/services/markup';
+import { syncQueue } from '@/queues';
 import type { SyncJobData } from '@/queues/jobs';
 
 const providerFactory = new ProviderFactory();
@@ -28,6 +29,21 @@ export async function processSyncJob(job: Job<SyncJobData>): Promise<void> {
     syncType,
     triggeredBy,
   });
+
+  // Handle 'all' providerId by dispatching individual sync jobs per active provider
+  if (providerId === 'all') {
+    const providers = await prisma.provider.findMany({ where: { isActive: true } });
+    jobLogger.info({ providerCount: providers.length }, 'Dispatching individual sync jobs for all active providers');
+    for (const p of providers) {
+      await syncQueue.add(`sync-${p.code}`, {
+        providerId: p.id,
+        providerCode: p.code,
+        syncType,
+        triggeredBy,
+      });
+    }
+    return; // This job just dispatches individual syncs
+  }
 
   jobLogger.info('Starting product sync');
 
@@ -193,11 +209,22 @@ export async function processSyncJob(job: Job<SyncJobData>): Promise<void> {
 
     await job.updateProgress(90);
 
-    // 7. Invalidate Redis cache for products
-    const cacheKeys = await redis.keys('products:*');
-    if (cacheKeys.length > 0) {
-      await redis.del(...cacheKeys);
-      jobLogger.info({ keysInvalidated: cacheKeys.length }, 'Product cache invalidated');
+    // 7. Invalidate Redis cache for products using SCAN (non-blocking)
+    let cursor = '0';
+    const keysToDelete: string[] = [];
+    do {
+      const [nextCursor, keys] = await redis.scan(cursor, 'MATCH', 'products:*', 'COUNT', 100);
+      cursor = nextCursor;
+      keysToDelete.push(...keys);
+    } while (cursor !== '0');
+
+    if (keysToDelete.length > 0) {
+      // Delete in batches of 100 to avoid huge DEL commands
+      for (let i = 0; i < keysToDelete.length; i += 100) {
+        const batch = keysToDelete.slice(i, i + 100);
+        await redis.del(...batch);
+      }
+      jobLogger.info({ keysInvalidated: keysToDelete.length }, 'Product cache invalidated');
     }
 
     // Also invalidate provider-specific caches

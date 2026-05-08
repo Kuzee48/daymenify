@@ -4,7 +4,7 @@ import { redis } from '@/lib/redis';
 import { logger } from '@/lib/logger';
 import { eventBus } from '@/events';
 import { notificationQueue } from '@/queues';
-import { ProviderFactory } from '@/services/provider';
+import { getProviderFactory } from '@/lib/factories';
 import type { NotificationJobData } from '@/queues/jobs';
 
 /**
@@ -28,10 +28,35 @@ export function handleProviderWebhook(providerCode: string): RequestHandler {
     const webhookLogger = logger.child({ provider: providerCode, path: req.path });
 
     try {
-      // 1. Log raw webhook for audit
-      webhookLogger.info({ body: req.body }, 'Provider webhook received');
+      // 1. Request body size validation
+      const bodySize = JSON.stringify(req.body).length;
+      if (bodySize > 65536) { // 64KB max
+        webhookLogger.warn({ bodySize }, 'Webhook request body too large');
+        res.status(413).json({ success: false, message: 'Request body too large' });
+        return;
+      }
 
-      // Create webhook log entry via audit_logs
+      // 2. Log raw webhook receipt (minimal - no DB write yet)
+      webhookLogger.info({ bodySize }, 'Provider webhook received');
+
+      // 3. Get provider adapter
+      const adapter = getProviderAdapter(providerCode);
+      if (!adapter) {
+        webhookLogger.error('Provider adapter not found');
+        res.status(200).json({ success: true });
+        return;
+      }
+
+      // 4. Verify webhook signature FIRST (before any DB writes)
+      const signature = extractSignature(req, providerCode);
+      const isValid = adapter.verifyWebhookSignature(req.body, signature);
+      if (!isValid) {
+        webhookLogger.warn('Invalid provider webhook signature');
+        res.status(200).json({ success: true });
+        return;
+      }
+
+      // 5. Create webhook log entry AFTER signature verification (prevents flood attacks filling DB)
       const webhookLog = await prisma.auditLog.create({
         data: {
           action: 'WEBHOOK_RECEIVED',
@@ -42,33 +67,14 @@ export function handleProviderWebhook(providerCode: string): RequestHandler {
         },
       });
 
-      // 2. Get provider adapter
-      const adapter = getProviderAdapter(providerCode);
-      if (!adapter) {
-        webhookLogger.error('Provider adapter not found');
-        await updateWebhookLog(webhookLog.id, 'FAILED', 'Adapter not found');
-        res.status(200).json({ success: true });
-        return;
-      }
-
-      // 3. Verify webhook signature
-      const signature = extractSignature(req, providerCode);
-      const isValid = adapter.verifyWebhookSignature(req.body, signature);
-      if (!isValid) {
-        webhookLogger.warn('Invalid provider webhook signature');
-        await updateWebhookLog(webhookLog.id, 'REJECTED', 'Invalid signature');
-        res.status(200).json({ success: true });
-        return;
-      }
-
-      // 4. Parse webhook payload
+      // 6. Parse webhook payload
       const parsed = adapter.parseWebhookPayload(req.body);
       webhookLogger.info(
         { refId: parsed.refId, status: parsed.status, serialNumber: parsed.serialNumber },
         'Provider webhook parsed'
       );
 
-      // 5. Idempotency check
+      // 7. Idempotency check
       const idempotencyKey = `webhook:processed:${providerCode}:${parsed.refId}:${parsed.status}`;
       const isNew = await redis.set(idempotencyKey, '1', 'EX', 86400, 'NX');
 
@@ -79,7 +85,7 @@ export function handleProviderWebhook(providerCode: string): RequestHandler {
         return;
       }
 
-      // 6. Find and update transaction
+      // 8. Find and update transaction
       const transaction = await prisma.transaction.findFirst({
         where: {
           OR: [
@@ -107,14 +113,22 @@ export function handleProviderWebhook(providerCode: string): RequestHandler {
 
       switch (mappedStatus) {
         case 'COMPLETED': {
-          await prisma.transaction.update({
-            where: { id: transaction.id },
+          // Optimistic lock: only update if transaction is in expected state
+          const completedResult = await prisma.transaction.updateMany({
+            where: { id: transaction.id, status: { in: ['PROCESSING', 'PAID'] } },
             data: {
               status: 'COMPLETED',
               serialNumber: parsed.serialNumber || undefined,
               completedAt: new Date(),
             },
           });
+
+          if (completedResult.count === 0) {
+            webhookLogger.info({ transactionId: transaction.id }, 'Transaction already completed or failed, skipping');
+            await updateWebhookLog(webhookLog.id, 'SKIPPED', 'Transaction already in terminal state');
+            res.status(200).json({ success: true });
+            return;
+          }
 
           // Log the completion
           await prisma.transactionLog.create({
@@ -164,13 +178,21 @@ export function handleProviderWebhook(providerCode: string): RequestHandler {
         }
 
         case 'FAILED': {
-          await prisma.transaction.update({
-            where: { id: transaction.id },
+          // Optimistic lock: only update if transaction is not already in terminal state
+          const failedResult = await prisma.transaction.updateMany({
+            where: { id: transaction.id, status: { in: ['PROCESSING', 'PAID', 'PENDING'] } },
             data: {
               status: 'FAILED',
               providerStatus: parsed.message || 'Provider reported failure',
             },
           });
+
+          if (failedResult.count === 0) {
+            webhookLogger.info({ transactionId: transaction.id }, 'Transaction already in terminal state, skipping failure update');
+            await updateWebhookLog(webhookLog.id, 'SKIPPED', 'Transaction already in terminal state');
+            res.status(200).json({ success: true });
+            return;
+          }
 
           await prisma.transactionLog.create({
             data: {
@@ -236,16 +258,13 @@ export function handleProviderWebhook(providerCode: string): RequestHandler {
 }
 
 /**
- * Get the provider adapter from the global factory
+ * Get the provider adapter from the module-scoped factory singleton
  */
 function getProviderAdapter(providerCode: string) {
   try {
-    const factory = (global as any).__providerFactory as ProviderFactory | undefined;
-    if (factory) {
-      const adapters = factory.getAllAdapters();
-      return adapters.get(providerCode) || null;
-    }
-    return null;
+    const factory = getProviderFactory();
+    const adapters = factory.getAllAdapters();
+    return adapters.get(providerCode) || null;
   } catch {
     return null;
   }

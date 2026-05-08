@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import rateLimit from 'express-rate-limit';
 import { handlePaymentWebhook } from './payment.webhook';
 import { handleProviderWebhook } from './provider.webhook';
 
@@ -11,6 +12,17 @@ import { handleProviderWebhook } from './provider.webhook';
  * Important: These routes use raw body parsing for signature verification.
  */
 export const webhookRouter = Router();
+
+// Rate limiter to prevent flood attacks on webhook endpoints
+const webhookRateLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 100, // 100 requests per IP per minute
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many webhook requests' },
+});
+
+webhookRouter.use(webhookRateLimiter);
 
 // ──────────────────────────────────────────────────────────
 // Payment Gateway Webhooks

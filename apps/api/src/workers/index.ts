@@ -5,6 +5,8 @@ import { processSyncJob } from './sync.worker';
 import { processNotificationJob } from './notification.worker';
 import { logger } from '@/lib/logger';
 
+const activeWorkers: Worker[] = [];
+
 /**
  * Worker Bootstrap
  *
@@ -30,6 +32,9 @@ export function startWorkers(): void {
     connection: queueConnection,
     concurrency: 10,
   });
+
+  // Track active workers for graceful shutdown
+  activeWorkers.push(orderWorker, syncWorker, notificationWorker);
 
   // Register event handlers for monitoring
   const workers = [
@@ -71,3 +76,13 @@ export function startWorkers(): void {
 export { processOrderJob } from './order.worker';
 export { processSyncJob } from './sync.worker';
 export { processNotificationJob } from './notification.worker';
+
+/**
+ * Gracefully stop all active workers.
+ * Waits for currently running jobs to complete before closing.
+ */
+export async function stopWorkers(): Promise<void> {
+  logger.info('Stopping workers...');
+  await Promise.all(activeWorkers.map(w => w.close()));
+  logger.info('All workers stopped');
+}

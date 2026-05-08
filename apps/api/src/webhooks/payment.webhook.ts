@@ -4,7 +4,7 @@ import { redis } from '@/lib/redis';
 import { logger } from '@/lib/logger';
 import { eventBus } from '@/events';
 import { orderQueue, notificationQueue } from '@/queues';
-import { PaymentGatewayFactory } from '@/services/payment';
+import { getPaymentFactory } from '@/lib/factories';
 import type { OrderJobData, NotificationJobData } from '@/queues/jobs';
 
 /**
@@ -28,10 +28,39 @@ export function handlePaymentWebhook(gatewayCode: string): RequestHandler {
     const webhookLogger = logger.child({ gateway: gatewayCode, path: req.path });
 
     try {
-      // 1. Log raw webhook for audit
-      webhookLogger.info({ body: req.body, headers: sanitizeHeaders(req.headers) }, 'Payment webhook received');
+      // 1. Request body size validation
+      const bodySize = JSON.stringify(req.body).length;
+      if (bodySize > 65536) { // 64KB max
+        webhookLogger.warn({ bodySize }, 'Webhook request body too large');
+        res.status(413).json({ success: false, message: 'Request body too large' });
+        return;
+      }
 
-      // Create webhook log entry via audit_logs (WebhookLog model can be added later)
+      // 2. Log raw webhook receipt (minimal - no DB write yet)
+      webhookLogger.info({ bodySize }, 'Payment webhook received');
+
+      // 3. Get payment adapter
+      const adapter = getPaymentAdapter(gatewayCode);
+      if (!adapter) {
+        webhookLogger.error('Payment adapter not found');
+        res.status(200).json({ success: true }); // Still return 200 to gateway
+        return;
+      }
+
+      // 4. Verify webhook signature FIRST (before any DB writes)
+      const headersRecord: Record<string, string> = {};
+      for (const [key, value] of Object.entries(req.headers)) {
+        if (typeof value === 'string') headersRecord[key] = value;
+      }
+
+      const isValid = adapter.verifyWebhookSignature(headersRecord, req.body);
+      if (!isValid) {
+        webhookLogger.warn('Invalid webhook signature');
+        res.status(200).json({ success: true }); // Still return 200
+        return;
+      }
+
+      // 5. Create webhook log entry AFTER signature verification (prevents flood attacks filling DB)
       const webhookLog = await prisma.auditLog.create({
         data: {
           action: 'WEBHOOK_RECEIVED',
@@ -42,37 +71,14 @@ export function handlePaymentWebhook(gatewayCode: string): RequestHandler {
         },
       });
 
-      // 2. Get payment adapter
-      const adapter = getPaymentAdapter(gatewayCode);
-      if (!adapter) {
-        webhookLogger.error('Payment adapter not found');
-        await updateWebhookLog(webhookLog.id, 'FAILED', 'Adapter not found');
-        res.status(200).json({ success: true }); // Still return 200 to gateway
-        return;
-      }
-
-      // 3. Verify webhook signature
-      const headersRecord: Record<string, string> = {};
-      for (const [key, value] of Object.entries(req.headers)) {
-        if (typeof value === 'string') headersRecord[key] = value;
-      }
-
-      const isValid = adapter.verifyWebhookSignature(headersRecord, req.body);
-      if (!isValid) {
-        webhookLogger.warn('Invalid webhook signature');
-        await updateWebhookLog(webhookLog.id, 'REJECTED', 'Invalid signature');
-        res.status(200).json({ success: true }); // Still return 200
-        return;
-      }
-
-      // 4. Parse webhook payload
+      // 6. Parse webhook payload
       const webhookData = adapter.parseWebhookPayload(req.body);
       webhookLogger.info(
         { orderId: webhookData.orderId, status: webhookData.status, gatewayRef: webhookData.gatewayRef },
         'Payment webhook parsed'
       );
 
-      // 5. Idempotency check - prevent duplicate processing
+      // 7. Idempotency check - prevent duplicate processing
       const idempotencyKey = `webhook:processed:${gatewayCode}:${webhookData.gatewayRef}:${webhookData.status}`;
       const isNew = await redis.set(idempotencyKey, '1', 'EX', 86400, 'NX'); // 24h TTL
 
@@ -83,7 +89,7 @@ export function handlePaymentWebhook(gatewayCode: string): RequestHandler {
         return;
       }
 
-      // 6. Process payment status update
+      // 8. Process payment status update
       const transaction = await prisma.transaction.findFirst({
         where: { invoiceId: webhookData.orderId },
         include: { product: true },
@@ -134,7 +140,7 @@ export function handlePaymentWebhook(gatewayCode: string): RequestHandler {
             amount: Number(transaction.totalAmount),
           });
 
-          // 7. Queue order processing
+          // 9. Queue order processing
           await orderQueue.add(
             'process-order',
             {
@@ -226,7 +232,7 @@ export function handlePaymentWebhook(gatewayCode: string): RequestHandler {
 
       await updateWebhookLog(webhookLog.id, 'PROCESSED', `Status: ${webhookData.status}`);
 
-      // 8. Always return 200
+      // 10. Always return 200
       res.status(200).json({ success: true });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -239,17 +245,12 @@ export function handlePaymentWebhook(gatewayCode: string): RequestHandler {
 }
 
 /**
- * Get the payment adapter from the factory.
- * In production, this would be initialized from the database at app startup.
+ * Get the payment adapter from the module-scoped factory singleton.
  */
 function getPaymentAdapter(gatewayCode: string) {
   try {
-    // Access the global payment factory (should be initialized at startup)
-    const factory = (global as any).__paymentFactory as PaymentGatewayFactory | undefined;
-    if (factory) {
-      return factory.getAdapter(gatewayCode);
-    }
-    return null;
+    const factory = getPaymentFactory();
+    return factory.getAdapter(gatewayCode);
   } catch {
     return null;
   }

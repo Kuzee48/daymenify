@@ -24,9 +24,10 @@ interface AuthResponse {
   user: {
     id: string;
     email: string;
-    firstName: string;
-    lastName: string;
+    name: string;
+    username: string | null;
     role: string;
+    referralCode: string;
   };
   tokens: TokenPair;
 }
@@ -88,7 +89,7 @@ async function invalidateRefreshToken(userId: string): Promise<void> {
 }
 
 export async function register(input: RegisterInput): Promise<AuthResponse> {
-  const { email, password, firstName, lastName } = input;
+  const { email, password, name, referredBy } = input;
 
   // Check if user already exists
   const existingUser = await prisma.user.findUnique({
@@ -99,17 +100,33 @@ export async function register(input: RegisterInput): Promise<AuthResponse> {
     throw new ConflictError('An account with this email already exists');
   }
 
+  // Find the 'customer' role from the roles table
+  const customerRole = await prisma.role.findFirst({
+    where: { name: 'customer' },
+  });
+
+  if (!customerRole) {
+    throw new Error('Default customer role not found in database. Please seed roles first.');
+  }
+
+  // Generate a unique referral code
+  const referralCode = generateReferralCode();
+
   // Hash password
   const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
 
-  // Create user
+  // Create user with schema-compatible fields
   const user = await prisma.user.create({
     data: {
       email: email.toLowerCase(),
       password: hashedPassword,
-      firstName,
-      lastName,
-      role: 'USER',
+      name,
+      roleId: customerRole.id,
+      referralCode,
+      referredBy: referredBy || undefined,
+    },
+    include: {
+      role: true,
     },
   });
 
@@ -117,7 +134,7 @@ export async function register(input: RegisterInput): Promise<AuthResponse> {
   const accessToken = generateAccessToken({
     userId: user.id,
     email: user.email,
-    role: user.role,
+    role: user.role.name,
   });
   const refreshToken = generateRefreshToken();
 
@@ -130,9 +147,10 @@ export async function register(input: RegisterInput): Promise<AuthResponse> {
     user: {
       id: user.id,
       email: user.email,
-      firstName: user.firstName,
-      lastName: user.lastName,
-      role: user.role,
+      name: user.name,
+      username: user.username,
+      role: user.role.name,
+      referralCode: user.referralCode,
     },
     tokens: {
       accessToken,
@@ -141,12 +159,25 @@ export async function register(input: RegisterInput): Promise<AuthResponse> {
   };
 }
 
+/**
+ * Generate a unique referral code (8 character alphanumeric)
+ */
+function generateReferralCode(): string {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let code = '';
+  for (let i = 0; i < 8; i++) {
+    code += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return code;
+}
+
 export async function login(input: LoginInput): Promise<AuthResponse> {
   const { email, password } = input;
 
-  // Find user
+  // Find user with role included
   const user = await prisma.user.findUnique({
     where: { email: email.toLowerCase() },
+    include: { role: true },
   });
 
   if (!user) {
@@ -167,7 +198,7 @@ export async function login(input: LoginInput): Promise<AuthResponse> {
   const accessToken = generateAccessToken({
     userId: user.id,
     email: user.email,
-    role: user.role,
+    role: user.role.name,
   });
   const refreshToken = generateRefreshToken();
 
@@ -180,9 +211,10 @@ export async function login(input: LoginInput): Promise<AuthResponse> {
     user: {
       id: user.id,
       email: user.email,
-      firstName: user.firstName,
-      lastName: user.lastName,
-      role: user.role,
+      name: user.name,
+      username: user.username,
+      role: user.role.name,
+      referralCode: user.referralCode,
     },
     tokens: {
       accessToken,
@@ -208,6 +240,7 @@ export async function refresh(
   // Fetch current user data
   const user = await prisma.user.findUnique({
     where: { id: userId },
+    include: { role: true },
   });
 
   if (!user) {
@@ -220,7 +253,7 @@ export async function refresh(
   const accessToken = generateAccessToken({
     userId: user.id,
     email: user.email,
-    role: user.role,
+    role: user.role.name,
   });
   const newRefreshToken = generateRefreshToken();
 
